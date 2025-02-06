@@ -33,13 +33,23 @@ pipeline {
 
         stage('SonarQube Scan') {
             steps {
-                sonarScan(params.SONARQUBE_HOST, params.SONARQUBE_PROJECT_KEY)
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONARQUBE_TOKEN')]) {
+                    withSonarQubeEnv('SonarQube') {
+                        sh "sonar-scanner -Dsonar.projectKey=${params.SONARQUBE_PROJECT_KEY} -Dsonar.host.url=${params.SONARQUBE_HOST} -Dsonar.login=$SONARQUBE_TOKEN"
+                    }
+                }
             }
         }
 
         stage('Docker Image Build and Push') {
             steps {
-                dockerBuildPush("${REGISTRY}/my-node-app", IMAGE_TAG)
+                withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh """
+                        docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD $REGISTRY
+                        docker build -t $REGISTRY/my-node-app:$IMAGE_TAG .
+                        docker push $REGISTRY/my-node-app:$IMAGE_TAG
+                    """
+                }
             }
         }
 
@@ -51,7 +61,12 @@ pipeline {
 
         stage('Deploy to Kubernetes (EKS)') {
             steps {
-                deployToEks(KUBE_MANIFEST, NAMESPACE)
+                withCredentials([kubeconfigFile(credentialsId: 'k8s-credentials', variable: 'KUBECONFIG')]) {
+                    sh """
+                        kubectl apply -f ${KUBE_MANIFEST} --namespace=${NAMESPACE}
+                        kubectl rollout status deployment -n ${NAMESPACE}
+                    """
+                }
             }
         }
     }
