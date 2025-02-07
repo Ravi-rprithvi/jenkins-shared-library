@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+        AWS_REGION = "us-east-1"
+        EKS_CLUSTER = "my-eks-cluster"
+        IMAGE_NAME = "${REGISTRY}/${env.JOB_NAME}:${env.BUILD_NUMBER}"
+        KUBE_MANIFEST = "k8s/${env.JOB_NAME}-deployment.yaml"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: "${env.BRANCH_NAME}", url: "https://github.com/my-org/microservices-repo.git"
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install' // Adjust based on service needs
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONARQUBE_TOKEN')]) {
+                    withSonarQubeEnv('SonarQube') {
+                        sh "sonar-scanner -Dsonar.projectKey=${env.JOB_NAME} -Dsonar.host.url=http://sonarqube.company.com -Dsonar.login=$SONARQUBE_TOKEN"
+                    }
+                }
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh """
+                        docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD $REGISTRY
+                        docker build -t $IMAGE_NAME .
+                        docker push $IMAGE_NAME
+                    """
+                }
+            }
+        }
+
+        stage('Trivy Security Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL $IMAGE_NAME || true"
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([kubeconfigFile(credentialsId: 'k8s-credentials', variable: 'KUBECONFIG')]) {
+                    sh """
+                        kubectl apply -f ${KUBE_MANIFEST} --namespace=${env.JOB_NAME}
+                        kubectl rollout status deployment/${env.JOB_NAME} -n ${env.JOB_NAME}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment successful for ${env.JOB_NAME}!"
+        }
+        failure {
+            echo "Build failed for ${env.JOB_NAME}. Check logs."
+        }
+    }
+}
