@@ -1,0 +1,74 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'CLOUD_PROVIDER', choices: ['aws', 'azure', 'gcp'], description: 'Select the cloud provider')
+    }
+
+    environment {
+        APP_NAME = "my-app"
+        IMAGE_TAG = "v1.0.${BUILD_NUMBER}"
+        AWS_REGION = "us-east-1"
+        AZURE_RESOURCE_GROUP = "myResourceGroup"
+        GCP_PROJECT = "my-gcp-project"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/my-org/my-app.git'
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                script {
+                    def dockerRegistry = params.CLOUD_PROVIDER == 'aws' ? "123456789012.dkr.ecr.us-east-1.amazonaws.com" :
+                                        params.CLOUD_PROVIDER == 'azure' ? "myregistry.azurecr.io" :
+                                        "gcr.io/${GCP_PROJECT}"
+
+                    withDockerRegistry(credentialsId: 'docker-credentials', url: dockerRegistry) {
+                        sh "docker build -t ${dockerRegistry}/${APP_NAME}:${IMAGE_TAG} ."
+                        sh "docker push ${dockerRegistry}/${APP_NAME}:${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Cloud') {
+            steps {
+                script {
+                    if (params.CLOUD_PROVIDER == 'aws') {
+                        withCredentials([aws(credentialsId: 'aws-credentials', region: AWS_REGION)]) {
+                            sh "terraform init -backend-config=aws-backend.tf"
+                            sh "terraform apply -auto-approve"
+                            sh "kubectl apply -f k8s/aws-deployment.yaml"
+                        }
+                    } else if (params.CLOUD_PROVIDER == 'azure') {
+                        withCredentials([azureServicePrincipal(credentialsId: 'azure-credentials')]) {
+                            sh "terraform init -backend-config=azure-backend.tf"
+                            sh "terraform apply -auto-approve"
+                            sh "kubectl apply -f k8s/azure-deployment.yaml"
+                        }
+                    } else if (params.CLOUD_PROVIDER == 'gcp') {
+                        withCredentials([file(credentialsId: 'gcp-credentials', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                            sh "gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS"
+                            sh "terraform init -backend-config=gcp-backend.tf"
+                            sh "terraform apply -auto-approve"
+                            sh "kubectl apply -f k8s/gcp-deployment.yaml"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment successful on ${params.CLOUD_PROVIDER}"
+        }
+        failure {
+            echo "Deployment failed on ${params.CLOUD_PROVIDER}"
+        }
+    }
+}
