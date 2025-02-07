@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'qa', 'prod'], description: 'Select the deployment environment')
+    }
+
+    environment {
+if (env.BRANCH_NAME == 'main') {
+        DEPLOY_ENV = 'prod'
+    } else if (env.BRANCH_NAME == 'develop') {
+        DEPLOY_ENV = 'qa'
+    } else {
+        DEPLOY_ENV = 'dev'
+    }
+        REGISTRY = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+        AWS_REGION = "us-east-1"
+        EKS_CLUSTER = "my-eks-cluster"
+        NAMESPACE = "${params.DEPLOY_ENV}"  // Namespace is based on selected environment
+        IMAGE_TAG = "${params.DEPLOY_ENV}-${BUILD_NUMBER}"
+        IMAGE_NAME = "${REGISTRY}/${env.JOB_NAME}:${IMAGE_TAG}"
+        KUBE_MANIFEST = "k8s/deployment-${params.DEPLOY_ENV}.yaml"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: "${env.BRANCH_NAME}", url: "https://github.com/my-org/${env.JOB_NAME}.git"
+            }
+        }
+
+        stage('Build & Test') {
+            steps {
+                sh 'npm install'
+                sh 'npm test'
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONARQUBE_TOKEN')]) {
+                    sh "sonar-scanner -Dsonar.projectKey=${env.JOB_NAME} -Dsonar.host.url=http://sonarqube.company.com -Dsonar.login=$SONARQUBE_TOKEN"
+                }
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh """
+                        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD $REGISTRY
+                        docker build -t $IMAGE_NAME .
+                        docker push $IMAGE_NAME
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([kubeconfigFile(credentialsId: 'k8s-credentials', variable: 'KUBECONFIG')]) {
+                    sh """
+                        kubectl apply -f ${KUBE_MANIFEST} --namespace=${NAMESPACE}
+                        kubectl rollout status deployment/${env.JOB_NAME} -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success { echo "Deployment successful for ${env.JOB_NAME} in ${params.DEPLOY_ENV} environment" }
+        failure { echo "Build failed for ${env.JOB_NAME} in ${params.DEPLOY_ENV} environment" }
+    }
+}
