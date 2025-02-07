@@ -1,0 +1,41 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'qa', 'prod'], description: 'Select the deployment environment')
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: "${env.BRANCH_NAME}", url: "https://github.com/my-org/my-app.git"
+            }
+        }
+
+        stage('Build & Deploy in Parallel') {
+            parallel {
+                stage('Deploy to Dev') {
+                    when { expression { params.DEPLOY_ENV == 'dev' } }
+                    steps {
+                        sh "echo Deploying to DEV environment"
+                        sh "kubectl apply -f k8s/deployment-dev.yaml"
+                    }
+                }
+                stage('Deploy to QA') {
+                    when { expression { params.DEPLOY_ENV == 'qa' } }
+                    steps {
+                        sh "echo Deploying to QA environment"
+                        sh "kubectl apply -f k8s/deployment-qa.yaml"
+                    }
+                }
+                stage('Deploy to Prod') {
+                    when { expression { params.DEPLOY_ENV == 'prod' } }
+                    steps {
+                        sh "echo Deploying to PROD environment"
+                        sh "kubectl apply -f k8s/deployment-prod.yaml"
+                    }
+                }
+            }
+        }
+    }
+}
