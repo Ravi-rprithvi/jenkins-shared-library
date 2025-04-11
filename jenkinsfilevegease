@@ -34,3 +34,71 @@ ENDSSH
 
 sleep 10
 curl "
+==================================
+#!/bin/bash
+
+
+> ids.txt
+> server.txt
+
+cd $WORKSPACE
+echo $GIT_BRANCH > GIT_BRANCH
+echo $GIT_COMMIT > GIT_COMMIT
+
+npm install
+npm run prestart
+
+ALB_Name=vegease-prod-api-alb
+ALB_ARN=$(aws elbv2 describe-load-balancers --names $ALB_Name --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+
+echo "ALB : $ALB_ARN\n"
+
+TG_ARN=$(aws elbv2 describe-target-groups --load-balancer-arn $ALB_ARN --query 'TargetGroups' --output text | grep 'vegease-prod-api-tg' | awk '{ print $12}' )
+
+echo "TARGET GROUP : $TG_ARN\n"
+
+aws elbv2 describe-target-health --target-group-arn $TG_ARN --query 'TargetHealthDescriptions[*].Target.Id' > ids.txt
+
+sed -i 's/"//g' ids.txt
+sed -i 's/,//g' ids.txt
+sed -i 's/\[//g' ids.txt
+sed -i 's/\]//g' ids.txt
+
+cat ids.txt
+
+for ID in `cat ids.txt`
+do
+   aws ec2 describe-instances --instance-ids $ID --query Reservations[].Instances[].PublicIpAddress --output text >> server.txt
+done
+
+for Server in `cat server.txt`
+do
+  echo "Inside $Server ..."
+ 
+  ssh -o StrictHostKeyChecking=no root@$Server 'mkdir -p /var/www/html/vegease/vegease-app-api.old; rm -rf /var/www/html/vegease/vegease-app-api.old/*; mv /var/www/html/vegease/vegease-app-api/* /var/www/html/vegease/vegease-app-api.old/';
+  rsync -azi --exclude=.git* ./* root@$Server:'/var/www/html/vegease/vegease-app-api/'
+
+  ssh -o StrictHostKeyChecking=no root@$Server << 'ENDSSH'
+     
+     cd /var/www/html/vegease/vegease-app-api
+     cp ../.env .
+     
+     mkdir -p src/public/priceExcel
+     chmod -R 755 src/public/priceExcel
+     chmod -R 777 logs
+     
+     pm2 stop build/server.js
+     
+	 cp vegease-c133f-firebase-adminsdk-athnc-ca7a40381f.json build/
+     
+     sleep 1
+     
+     echo "Run command now ...\n"
+     NODE_ENV=production pm2 start build/server.js
+
+ENDSSH
+done
+
+sleep 5
+
+curl 
