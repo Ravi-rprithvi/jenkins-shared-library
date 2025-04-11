@@ -1,0 +1,36 @@
+#!/bin/bash
+
+cd $WORKSPACE
+
+echo $GIT_BRANCH > GIT_BRANCH
+echo $GIT_COMMIT > GIT_COMMIT
+
+npm install -f
+npm run prestart
+
+SERVER=
+
+ssh -o StrictHostKeyChecking=no root@$SERVER 'rm -rf /var/www/html/vegease/vegease-admin-api/.env.qa /var/www/html/vegease/vegease-admin-api/*'
+rsync -azi --exclude=.git* ./* .env.qa root@$SERVER:'/var/www/html/vegease/vegease-admin-api/'
+
+ssh -o StrictHostKeyChecking=no root@$SERVER <<'ENDSSH'
+
+    cd /var/www/html/vegease/vegease-admin-api
+    cp ../admin/.env.qa .
+    mkdir -p src/public/priceExcel
+    chmod -R 755 src/public/priceExcel
+    chmod -R 777 logs
+	cp vegease-qa-firebase-adminsdk-olmf4-b2bc5bc02e.json build/
+    cp stage_cf_reports_private_key.pem build/
+
+	pm2 stop admin
+
+echo "Run command now ...\n"
+NODE_ENV=qa pm2 start build/server.js --name admin --node-args="--max-old-space-size=200"
+##NODE_ENV=qa pm2 start build/server.js --name=admin
+
+
+ENDSSH
+
+sleep 10
+curl "
